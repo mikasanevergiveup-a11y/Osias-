@@ -6,14 +6,14 @@ import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Logging setup
+# Logging အချက်အလက်များ ထုတ်ပေးရန် Setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Environment Variables
+# Environment Variables မှတစ်ဆင့် Token နှင့် Admin ID ကို ယူမည်
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 
-# --- Database Functions ---
+# --- Database သုံးရန် Function များ ---
 def init_db():
     conn = sqlite3.connect("bot_users.db")
     cursor = conn.cursor()
@@ -36,30 +36,29 @@ def get_all_users():
     conn.close()
     return [u[0] for u in users]
 
-# --- ၃ မိနစ်တစ်ခါ sys ကိုသုံးပြီး Bot ကို Restart လုပ်ပေးမည့် Task ---
+# --- ၃ မိနစ် (၁၈၀ စက္ကန့်) တစ်ခါ sys ဖြင့် Auto Restart လုပ်မည့် Function ---
 async def auto_restart():
-    await asyncio.sleep(180)  # ၃ မိနစ် (၁၈၀ စက္ကန့်)
-    logging.info("3 မိနစ် ပြည့်သွားသဖြင့် Script ကို sys/os ဖြင့် ပြန်လည် စတင် (Restart) ပေးနေပါသည်...")
-    # sys.executable နှင့် sys.argv ကို သုံးပြီး လက်ရှိ Python process ကို အစကနေ ပြန်စပေးခြင်း
+    await asyncio.sleep(180)  # ၃ မိနစ် စောင့်မည်
+    logging.info("3 မိနစ် ပြည့်သွားပါသဖြင့် Script ကို sys/os ဖြင့် ပြန်စနေပါသည်...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 async def post_init(application):
-    # Bot စတင်သည်နှင့် Background တွင် ၃ မိနစ် Auto-Restart Task ကို ပလပ်ထိုးပေးခြင်း
+    # Bot စတင်သည်နှင့် Background တွင် Auto-Restart Task ကို စတင်မည်
     asyncio.create_task(auto_restart())
 
-# --- Bot Handlers ---
+# --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # User ID ကို Database ထဲ တိတ်တဆိတ် သိမ်းမည် (စာပြန်မပို့ပါ)
+    # /start နှိပ်ပါက စာပြန်မပို့ဘဲ User ID ကိုသာ တိတ်တဆိတ် သိမ်းမည်
     user_id = update.effective_user.id
     add_user(user_id)
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Admin ဟုတ်မဟုတ် စစ်ဆေးခြင်း
+    # Admin စစ်ဆေးခြင်း
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⚠️ ဒီ Command ကို Admin သာ အသုံးပြုနိုင်ပါသည်။")
         return
 
-    # Broadcast မလုပ်မီ ပို့ချင်သည့် စာ/ပုံ ကို Reply ပြန်ထားခြင်း ရှိမရှိ စစ်ခြင်း
+    # Reply ပြန်ထားသည့် Message ရှိ/မရှိ စစ်ဆေးခြင်း
     if not update.message.reply_to_message:
         await update.message.reply_text(
             "👉 ကြော်ငြာချင်တဲ့ စာ (သို့) ဓာတ်ပုံ/ဗီဒီယိုကို Reply ပြန်ပြီး `/broadcast` လို့ ရိုက်ပေးပါ။",
@@ -97,6 +96,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast))
     
-    print("Bot starting with 3-minute sys restart loop...")
+    print("Bot starting with 3-minute sys auto-restart...")
     app.run_polling()
-  
+
