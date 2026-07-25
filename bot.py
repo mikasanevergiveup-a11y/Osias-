@@ -14,7 +14,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Logging သတ်မှတ်ခြင်း
+# Logging သတ်မှတ်ခြင်း (Errors များကို Terminal မှာ သေချာပေါ်စေရန်)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -33,14 +33,19 @@ ADMIN_IDS = [
 
 
 # ==========================================
-# DATABASE SYSTEM
+# DATABASE SYSTEM (အချက်အလက် စစ်ဆေးချက်များနှင့်တကွ)
 # ==========================================
 def get_db_connection():
+    if not DATABASE_URL:
+        logger.error("❌ DATABASE_URL is missing in Environment Variables!")
+        return None
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 def init_db():
     try:
         conn = get_db_connection()
+        if not conn:
+            return
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -53,13 +58,15 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        logger.info("✅ Database initialized successfully.")
+        logger.info("✅ Database table 'users' initialized successfully.")
     except Exception as e:
-        logger.error(f"❌ Database error: {e}")
+        logger.error(f"❌ Database initialization error: {e}")
 
 def save_user(user_id, username, first_name):
     try:
         conn = get_db_connection()
+        if not conn:
+            return
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO users (user_id, username, first_name) VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
@@ -68,12 +75,15 @@ def save_user(user_id, username, first_name):
         conn.commit()
         cur.close()
         conn.close()
+        logger.info(f"👤 User saved/checked successfully: {user_id}")
     except Exception as e:
-        logger.error(f"Error saving user: {e}")
+        logger.error(f"❌ Error saving user {user_id}: {e}")
 
 def get_users_count():
     try:
         conn = get_db_connection()
+        if not conn:
+            return 0
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM users;")
         count = cur.fetchone()[0]
@@ -81,7 +91,7 @@ def get_users_count():
         conn.close()
         return count
     except Exception as e:
-        logger.error(f"Error getting user count: {e}")
+        logger.error(f"❌ Error getting user count: {e}")
         return 0
 
 
@@ -111,7 +121,6 @@ def self_ping():
         time.sleep(300) # ၅ မိနစ် တစ်ခါ Ping မည်
         try:
             requests.get(f"{url}/health")
-            logger.info("✅ Self ping successful")
         except Exception as e:
             logger.error(f"❌ Self ping failed: {e}")
 
@@ -123,7 +132,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
 
-    # User ကို Database ထဲသို့ တိတ်တဆိတ် သိမ်းမည် (/start လုပ်သူတိုင်း မှတ်မည်)
+    # User ကို Database ထဲသို့ သေချာသိမ်းမည်
     save_user(user_id, user.username, user.first_name)
 
     # Admin ဟုတ်မဟုတ် စစ်ဆေးခြင်း
@@ -164,7 +173,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ADMIN_IDS:
         return
 
-    # Reply လုပ်ထားသော မက်ဆေ့ချ် ရှိမရှိ စစ်ဆေးခြင်း
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ ကျေးဇူးပြု၍ ပို့လိုသော စာ (သို့) ပုံကို Reply လုပ်ပြီးမှ `/broadcast` ဟု ရိုက်ပို့ပါ။")
         return
@@ -174,6 +182,9 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Database ထဲက user_id အားလုံးကို ယူရန်
     try:
         conn = get_db_connection()
+        if not conn:
+            await update.message.reply_text("❌ Database ချိတ်ဆက်မှု မရှိပါ (DATABASE_URL ကို စစ်ဆေးပါ)။")
+            return
         cur = conn.cursor()
         cur.execute("SELECT user_id FROM users;")
         users = cur.fetchall()
@@ -181,11 +192,11 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
     except Exception as e:
         logger.error(f"Database error during broadcast: {e}")
-        await update.message.reply_text("❌ Database ချိတ်ဆက်မှု အဆင်မပြေပါ။")
+        await update.message.reply_text(f"❌ Database error: {e}")
         return
 
     if not users:
-        await update.message.reply_text("⚠️ စာပို့ရန် User တစ်ယောက်မှ မရှိသေးပါ။ (/start လုပ်ထားသူ မရှိပါ)")
+        await update.message.reply_text("⚠️ စာပို့ရန် User တစ်ယောက်မှ Database ထဲတွင် မရှိသေးပါ။ (/start လုပ်ထားသူ မရှိပါ သို့မဟုတ် DB ချိတ်ဆက်မှု လွဲနေသည်)")
         return
 
     await update.message.reply_text(f"⏳ User စုစုပေါင်း {len(users)} ယောက်ထံသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
@@ -193,7 +204,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success_count = 0
     fail_count = 0
     
-    # User တစ်ယောက်ချင်းစီဆီသို့ Reply လုပ်ထားသော မက်ဆေ့ချ်အတိုင်း ပို့ရန်
     for user in users:
         target_id = user[0]
         try:
@@ -207,7 +217,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ Broadcast အောင်မြင်စွာ ပြီးဆုံးပါပြီ။\n\n"
         f"✅ အောင်မြင်သူ: {success_count} ယောက်\n"
-        f"❌ မအောင်မြင်သူ (Bot ကို Block ထားသူများ): {fail_count} ယောက်"
+        f"❌ မအောင်မြင်သူ (Bot ကို Block ထားသူများ/ပျက်သွားသူများ): {fail_count} ယောက်"
     )
 
 
@@ -235,4 +245,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
