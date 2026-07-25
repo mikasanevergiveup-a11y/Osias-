@@ -1,183 +1,177 @@
-import os
+import asyncio
 import logging
-import threading
+import os
 import psycopg2
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import requests
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
-# Logging setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Logging သတ်မှတ်ခြင်း
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
+# Environment Variables များယူခြင်း
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL") 
-ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
-ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(",") if id.strip().isdigit()]
+DATABASE_URL = os.environ.get("DATABASE_URL")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# ==========================================
-# 🌐 Dummy Web Server (Render တွင် Port Error မတက်ရန်)
-# ==========================================
-class DummyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Bot is alive and running with Supabase Database!")
+# Admin ID များကို Environment Variable မှ ယူခြင်း (ဥပမာ - 12345678,87654321)
+ADMIN_IDS = [
+    int(x.strip())
+    for x in os.environ.get("ADMIN_IDS", "").split(",")
+    if x.strip().isdigit()
+]
 
-def run_dummy_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), DummyHandler)
-    server.serve_forever()
 
-# ==========================================
-# 🗄️ Supabase Database Functions
-# ==========================================
+# Database Connection
 def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    return conn
+  return psycopg2.connect(DATABASE_URL, sslmode="require")
 
+
+# Database Table မရှိသေးပါက အသစ်ဆောက်ခြင်း
 def init_db():
+  try:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT
-        )
-    """)
+    cur = conn.cursor()
+    cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username VARCHAR(255),
+                first_name VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
     conn.commit()
-    cursor.close()
+    cur.close()
     conn.close()
-    logging.info("Supabase database initialized successfully.")
+    logger.info("Supabase database initialized successfully.")
+  except Exception as e:
+    logger.error(f"Database error: {e}")
 
-def add_user(user_id: int, username: str):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO users (user_id, username) VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username
-        """, (user_id, username))
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        logging.error(f"Error adding user to database: {e}")
 
-def get_all_users_info():
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, username FROM users")
-        users = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return users
-    except Exception as e:
-        logging.error(f"Error fetching users: {e}")
-        return []
+# User အချက်အလက်များကို Database ထဲ သိမ်းဆည်းခြင်း
+def save_user(user_id, username, first_name):
+  try:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+            INSERT INTO users (user_id, username, first_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO NOTHING;
+        """,
+        (user_id, username, first_name),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+  except Exception as e:
+    logger.error(f"Error saving user: {e}")
 
-# ==========================================
-# 🤖 Bot Handlers
-# ==========================================
-async def track_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat and update.effective_chat.type == "private":
-        user = update.effective_user
-        if user:
-            username = f"@{user.username}" if user.username else user.first_name
-            add_user(user.id, username)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    username = f"@{user.username}" if user.username else user.first_name
-    add_user(user.id, username)
-    await update.message.reply_text("👋 မင်္ဂလာပါ! Bot အဆင်သင့် ဖြစ်ပါပြီ။")
+# စုစုပေါင်း User အရေအတွက်ကို ရယူခြင်း
+def get_users_count():
+  try:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users;")
+    count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return count
+  except Exception as e:
+    logger.error(f"Error getting user count: {e}")
+    return 0
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
 
-    keyboard = [
-        [InlineKeyboardButton("👥 User စာရင်း ကြည့်ရန်", callback_data="view_users")],
-        [InlineKeyboardButton("📢 Broadcast အသုံးပြုနည်း", callback_data="help_broadcast")]
-    ]
+# Render Server မအိပ်သွားစေရန် ၁၀ မိနစ်တစ်ခါ Self-Ping လုပ်ပေးသည့် System
+async def self_ping():
+  while True:
+    await asyncio.sleep(600)  # 600 စက္ကန့် (၁၀ မိနစ်)
+    if RENDER_EXTERNAL_URL:
+      try:
+        response = requests.get(RENDER_EXTERNAL_URL)
+        logger.info(f"Self ping successful: status {response.status_code}")
+      except Exception as e:
+        logger.error(f"Self ping failed: {e}")
+
+
+# /start Command Handler
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  user = update.effective_user
+  user_id = user.id
+
+  # User ကို Database ထဲ သို့ တိတ်တဆိတ် သိမ်းမည်
+  save_user(user_id, user.username, user.first_name)
+
+  # Admin ဟုတ်မဟုတ် စစ်ဆေးခြင်း
+  if user_id in ADMIN_IDS:
+    keyboard = [[
+        InlineKeyboardButton(
+            "👥 User စာရင်း ကြည့်ရန်", callback_data="view_users"
+        )
+    ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🛠️ **Admin Panel** မှ ကြိုဆိုပါတယ်။", reply_markup=reply_markup, parse_mode="Markdown")
+    msg_text = (
+        "သင်သည် admin ဖြစ်သောကြောင့် အောက်ပါ feature များကို"
+        " အသုံးပြုနိုင်ပါသည်။"
+    )
+    await update.message.reply_text(msg_text, reply_markup=reply_markup)
+  else:
+    # သာမန် User ဖြစ်ပါက ဘာမှ ပြန်မပို့ပါ (Silent)
+    return
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
 
-    if query.effective_user.id not in ADMIN_IDS:
-        return
+# Button နှိပ်သည့်အခါ အလုပ်လုပ်မည့် Handler
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  query = update.callback_query
+  await query.answer()
 
-    if query.data == "view_users":
-        users = get_all_users_info()
-        if not users:
-            await query.message.reply_text("⚠️ User တစ်ယောက်မှ မရှိသေးပါ။")
-            return
+  user_id = query.from_user.id
+  if user_id not in ADMIN_IDS:
+    return
 
-        text = f"👥 **Cloud (Supabase) ပေါ်ရှိ User စုစုပေါင်း: {len(users)} ယောက်**\n\n"
-        for uid, uname in users:
-            display_name = uname if uname else "Unknown"
-            text += f"▪️ {display_name} (`{uid}`)\n"
-
-        if len(text) > 4000:
-            text = text[:4000] + "\n... (User များနေသဖြင့် အချို့ကို ဖျောက်ထားပါသည်)"
-
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif query.data == "help_broadcast":
-        await query.message.reply_text("👉 **Broadcast ပို့ရန်** - သင်ကြော်ငြာချင်တဲ့ စာကို Reply ပြန်ပြီး `/broadcast` လို့ ရိုက်ပေးပါ။", parse_mode="Markdown")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⚠️ ဒီ Command ကို Admin သာ အသုံးပြုနိုင်ပါသည်။")
-        return
-
-    if not update.message.reply_to_message:
-        await update.message.reply_text("👉 ကြော်ငြာချင်တဲ့ စာကို Reply ပြန်ပြီး `/broadcast` လို့ ရိုက်ပေးပါ။")
-        return
-
-    target_message = update.message.reply_to_message
-    users = get_all_users_info()
-    
-    if len(users) == 0:
-        await update.message.reply_text("⚠️ Bot ထဲတွင် User တစ်ယောက်မှ မရှိသေးပါ။")
-        return
-
-    status_msg = await update.message.reply_text(f"📢 လူဦးရေ {len(users)} ယောက်ဆီ ကြော်ငြာ စတင် ပို့ဆောင်နေပါပြီ...")
-    
-    success = 0
-    failed = 0
-
-    for uid, _ in users:
-        try:
-            await target_message.copy(chat_id=uid)
-            success += 1
-        except Exception:
-            failed += 1
-
-    await status_msg.edit_text(
-        f"✅ **Broadcast ပို့ဆောင်မှု ပြီးစီးပါပြီ။**\n\n"
-        f"▪️ အောင်မြင်စွာ ပို့ပြီး: {success} ယောက်\n"
-        f"▪️ မအောင်မြင်/Bot Block ထားသူ: {failed} ယောက်"
+  if query.data == "view_users":
+    count = get_users_count()
+    text = (
+        f"သင်သည် admin ဖြစ်သောကြောင့် အောက်ပါ feature များကို"
+        f" အသုံးပြုနိုင်ပါသည်။\n\n📊 **စုစုပေါင်း User အရေအတွက်:** {count} ယောက်"
+    )
+    keyboard = [[
+        InlineKeyboardButton(
+            "👥 User စာရင်း ကြည့်ရန်", callback_data="view_users"
+        )
+    ]]
+    await query.message.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ==========================================
+
+# Bot စတင်ချိန်တွင် Self-Ping System ကို Background မှာ စတင်ရန်
+async def post_init(application: Application):
+  asyncio.create_task(self_ping())
+
+
+def main():
+  init_db()
+
+  app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+  app.add_handler(CommandHandler("start", start_command))
+  app.add_handler(CallbackQueryHandler(button_click))
+
+  logger.info("Bot is successfully running with Supabase Cloud DB...")
+  app.run_polling()
+
+
 if __name__ == "__main__":
-    init_db()
-    
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-    
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_users))
-    
-    print("Bot is successfully running with Supabase Cloud DB...")
-    app.run_polling(drop_pending_updates=True)
+  main()
     
