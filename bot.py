@@ -123,7 +123,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
 
-    # User ကို Database ထဲသို့ တိတ်တဆိတ် သိမ်းမည်
+    # User ကို Database ထဲသို့ တိတ်တဆိတ် သိမ်းမည် (/start လုပ်သူတိုင်း မှတ်မည်)
     save_user(user_id, user.username, user.first_name)
 
     # Admin ဟုတ်မဟုတ် စစ်ဆေးခြင်း
@@ -156,7 +156,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# BROADCAST SYSTEM (/broadcast)
+# REPLY SYSTEM BROADCAST (/broadcast)
 # ==========================================
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -164,12 +164,14 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ADMIN_IDS:
         return
 
-    if not context.args:
-        await update.message.reply_text("⚠️ အသုံးပြုနည်း: `/broadcast ပို့ချင်သောစာသား`", parse_mode="Markdown")
+    # Reply လုပ်ထားသော မက်ဆေ့ချ် ရှိမရှိ စစ်ဆေးခြင်း
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ ကျေးဇူးပြု၍ ပို့လိုသော စာ (သို့) ပုံကို Reply လုပ်ပြီးမှ `/broadcast` ဟု ရိုက်ပို့ပါ။")
         return
 
-    broadcast_msg = " ".join(context.args)
-    
+    target_message = update.message.reply_to_message
+
+    # Database ထဲက user_id အားလုံးကို ယူရန်
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -183,28 +185,29 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not users:
-        await update.message.reply_text("⚠️ စာပို့ရန် User တစ်ယောက်မှ မရှိသေးပါ။")
+        await update.message.reply_text("⚠️ စာပို့ရန် User တစ်ယောက်မှ မရှိသေးပါ။ (/start လုပ်ထားသူ မရှိပါ)")
         return
 
-    await update.message.reply_text(f"⏳ User စုစုပေါင်း {len(users)} ယောက်ထံသို့ စာများ စတင်ပို့ဆောင်နေပါပြီ...")
+    await update.message.reply_text(f"⏳ User စုစုပေါင်း {len(users)} ယောက်ထံသို့ Broadcast စတင်ပို့ဆောင်နေပါပြီ...")
     
     success_count = 0
     fail_count = 0
     
+    # User တစ်ယောက်ချင်းစီဆီသို့ Reply လုပ်ထားသော မက်ဆေ့ချ်အတိုင်း ပို့ရန်
     for user in users:
         target_id = user[0]
         try:
-            await context.bot.send_message(chat_id=target_id, text=broadcast_msg)
+            await target_message.copy(chat_id=target_id)
             success_count += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05)  # Telegram API Limit မကျော်စေရန်
         except Exception as e:
             logger.error(f"Failed to send message to {target_id}: {e}")
             fail_count += 1
             
     await update.message.reply_text(
         f"✅ Broadcast အောင်မြင်စွာ ပြီးဆုံးပါပြီ။\n\n"
-        f"✅ အောင်မြင်: {success_count} ယောက်\n"
-        f"❌ မအောင်မြင်: {fail_count} ယောက်"
+        f"✅ အောင်မြင်သူ: {success_count} ယောက်\n"
+        f"❌ မအောင်မြင်သူ (Bot ကို Block ထားသူများ): {fail_count} ယောက်"
     )
 
 
@@ -232,4 +235,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
